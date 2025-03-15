@@ -115,7 +115,7 @@ def create_interactive_profile(scenario, results_list, figsize=(14, 8)):
         result = results_list[closest_index]
         
         # Determine coloring option
-        color_option = color_options[color_radio.value_selected]
+        color_option = color_radio.value_selected
         color_by = color_option.lower() if color_option != 'None' else None
         
         # Plot the profile with the selected result
@@ -230,7 +230,7 @@ def create_interactive_cross_section_viewer(scenario, results, figsize=(14, 10))
         ax_cross.clear()
         
         # Get parameter highlighting option
-        param_option = param_options[param_radio.value_selected]
+        param_option = param_radio.value_selected
         
         # Determine water depth and parameters at this location
         if loc <= 0:  # Upstream of dam
