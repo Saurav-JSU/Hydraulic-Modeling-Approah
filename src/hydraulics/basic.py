@@ -60,7 +60,7 @@ def section_properties(depth: float, bottom_width: float, side_slope: float = 0)
     if depth == 0:
         return {
             "area": 0,
-            "wetted_perimeter": 0 if bottom_width == 0 else bottom_width,
+            "wetted_perimeter": bottom_width,  # Corrected: wetted perimeter equals bottom width when depth is zero
             "top_width": bottom_width,
             "hydraulic_radius": 0
         }
@@ -118,6 +118,83 @@ def critical_depth(discharge: float, top_width: float) -> float:
     
     return critical_depth
 
+def critical_depth_general(discharge: float, section_props_func, *args, **kwargs) -> float:
+    """
+    Calculate critical depth for any channel shape using an iterative approach.
+    
+    Parameters:
+        discharge (float): Flow rate (m³/s)
+        section_props_func: Function that returns section properties given a depth
+        *args, **kwargs: Additional arguments to pass to section_props_func
+        
+    Returns:
+        float: Critical depth (m)
+        
+    Raises:
+        ValueError: If discharge is negative
+        RuntimeError: If iteration fails to converge
+    """
+    if discharge < 0:
+        raise ValueError("Discharge must be non-negative")
+    
+    # For zero discharge, critical depth is zero
+    if discharge == 0:
+        return 0
+    
+    # Initial guess for critical depth
+    # For a rectangular channel, try the simple formula first
+    props = section_props_func(1.0, *args, **kwargs)
+    if 'top_width' in props:
+        y_c = critical_depth(discharge, props['top_width'])
+    else:
+        y_c = 1.0  # Default initial guess
+    
+    # Iterative solution using Newton-Raphson method
+    tolerance = 1e-6
+    max_iterations = 50
+    iterations = 0
+    
+    while iterations < max_iterations:
+        # Get section properties at current depth
+        props = section_props_func(y_c, *args, **kwargs)
+        
+        # Calculate specific energy at critical condition
+        area = props['area']
+        top_width = props['top_width']
+        
+        # At critical flow, specific energy is minimized where:
+        # Q^2*T/gA^3 = 1, where T is top width and A is area
+        critical_param = discharge**2 * top_width / (GRAVITY * area**3)
+        
+        # Calculate error
+        error = critical_param - 1.0
+        
+        # Check convergence
+        if abs(error) < tolerance:
+            return y_c
+        
+        # Calculate derivative of error function
+        delta = 0.001 * y_c  # Small depth change for numerical derivative
+        props_delta = section_props_func(y_c + delta, *args, **kwargs)
+        area_delta = props_delta['area']
+        top_width_delta = props_delta['top_width']
+        
+        critical_param_delta = discharge**2 * top_width_delta / (GRAVITY * area_delta**3)
+        derivative = (critical_param_delta - critical_param) / delta
+        
+        # Update depth using Newton-Raphson
+        if abs(derivative) < 1e-10:  # Prevent division by near-zero
+            y_c = y_c * 1.1  # Simple adjustment if derivative is too small
+        else:
+            y_c = y_c - error / derivative
+        
+        # Ensure depth remains positive
+        y_c = max(y_c, 1e-6)
+        
+        iterations += 1
+    
+    raise RuntimeError("Critical depth calculation failed to converge")
+
 def froude_number(velocity: float, depth: float) -> float:
     """
     Calculate Froude number.
@@ -136,6 +213,32 @@ def froude_number(velocity: float, depth: float) -> float:
         raise ValueError("Depth must be positive for Froude number calculation")
     
     return velocity / math.sqrt(GRAVITY * depth)
+
+def froude_number_general(velocity: float, area: float, top_width: float) -> float:
+    """
+    Calculate Froude number for any channel shape.
+    
+    Parameters:
+        velocity (float): Average flow velocity (m/s)
+        area (float): Cross-sectional area of flow (m²)
+        top_width (float): Width of water surface (m)
+        
+    Returns:
+        float: Froude number (dimensionless)
+        
+    Raises:
+        ValueError: If invalid inputs are provided
+    """
+    if area <= 0:
+        raise ValueError("Area must be positive for Froude number calculation")
+    if top_width <= 0:
+        raise ValueError("Top width must be positive for Froude number calculation")
+    
+    # Calculate hydraulic depth (area/top_width)
+    hydraulic_depth = area / top_width
+    
+    # Calculate Froude number using hydraulic depth
+    return velocity / math.sqrt(GRAVITY * hydraulic_depth)
 
 def flow_classification(froude_number: float) -> str:
     """
@@ -174,4 +277,6 @@ def reynolds_number(velocity: float, hydraulic_radius: float,
     if hydraulic_radius <= 0:
         raise ValueError("Hydraulic radius must be positive for Reynolds number calculation")
     
+    # Use factor of 4 to convert from hydraulic radius to hydraulic diameter
+    # This is standard practice in open channel hydraulics
     return 4 * velocity * hydraulic_radius / kinematic_viscosity

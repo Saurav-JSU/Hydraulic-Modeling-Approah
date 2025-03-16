@@ -41,8 +41,8 @@ def plot_channel_cross_section(ax, channel_type, channel_params, water_depth,
         bottom_width = channel_params.get('bottom_width', 5.0)
         side_slope = 0
     
-    # Calculate dimensions
-    half_bottom = bottom_width / 2
+    # Calculate dimensions - ensure positive values
+    half_bottom = max(0.01, bottom_width / 2)  # Avoid zero width
     if water_depth > 0:
         water_width = bottom_width + 2 * side_slope * water_depth
         half_water = water_width / 2
@@ -376,8 +376,8 @@ def create_cross_section_dashboard(scenario, results, locations=None, figsize=(1
         locations = [-10, 0, 20, 100]
         
         # Add hydraulic jump location if present
-        jump = results['hydraulic_jump']
-        if jump.get('jump_possible', False):
+        jump = results.get('hydraulic_jump', {})
+        if jump.get('jump_possible', False) and 'location' in jump:
             locations.insert(3, jump['location'])
     
     # Number of locations
@@ -415,15 +415,15 @@ def create_cross_section_dashboard(scenario, results, locations=None, figsize=(1
     # Extract channel parameters
     channel_type = 'trapezoidal'  # Default type
     channel_params = {
-        'bottom_width': scenario['channel_bottom_width'],
-        'side_slope': scenario['channel_side_slope']
+        'bottom_width': scenario.get('channel_bottom_width', 5.0),
+        'side_slope': scenario.get('channel_side_slope', 1.5)
     }
     
     # Extract data for cross-sections
-    dam = scenario['dam']
-    dam_base = scenario['dam_base_elevation']
-    dam_crest = scenario['dam_crest_elevation']
-    tailwater = results['tailwater']
+    dam = scenario.get('dam', {})
+    dam_base = scenario.get('dam_base_elevation', 0)
+    dam_crest = scenario.get('dam_crest_elevation', 10)
+    tailwater = results.get('tailwater', {})
     
     # Plot cross-sections
     for i, loc in enumerate(locations):
@@ -431,55 +431,115 @@ def create_cross_section_dashboard(scenario, results, locations=None, figsize=(1
         
         # Determine water depth and bed elevation at this location
         if loc <= 0:  # Upstream of dam
-            water_elevation = results['upstream_level']
+            water_elevation = results.get('upstream_level', dam_base)
             bed_elevation = dam_base
             water_depth = max(0, water_elevation - bed_elevation)
             
-            # Estimate velocity
-            if water_depth > 0 and results['discharge'] > 0:
-                area = water_depth * scenario['channel_width_at_dam']
-                velocity = results['discharge'] / area
-                froude = velocity / np.sqrt(9.81 * water_depth)
+            # Estimate velocity - Avoid division by zero
+            discharge = results.get('discharge', 0)
+            if water_depth > 0 and discharge > 0:
+                # Use wetted area calculation for more accuracy
+                if channel_type.lower() == 'trapezoidal':
+                    # Area = (bottom width + top width) * height / 2
+                    bottom_width = channel_params['bottom_width']
+                    side_slope = channel_params['side_slope']
+                    top_width = bottom_width + 2 * side_slope * water_depth
+                    area = (bottom_width + top_width) * water_depth / 2
+                else:  # rectangular
+                    area = water_depth * channel_params['bottom_width']
+                
+                # Ensure non-zero area
+                area = max(area, 0.001)  # Minimum area to avoid division by zero
+                velocity = discharge / area
+                
+                # Froude number using hydraulic depth (A/T)
+                if top_width > 0:
+                    hydraulic_depth = area / top_width
+                    froude = velocity / np.sqrt(9.81 * max(hydraulic_depth, 0.001))
+                else:
+                    froude = 0
             else:
                 velocity = 0
                 froude = 0
                 
-            # Estimate shear stress (simplified τ = ρgRS)
+            # Estimate shear stress using hydraulic radius and energy slope
             if water_depth > 0:
-                rho = 1000  # Water density
-                g = 9.81     # Gravity
-                R = water_depth  # Simplified hydraulic radius
-                S = scenario['channel_slope']
+                rho = 1000  # Water density (kg/m³)
+                g = 9.81     # Gravity (m/s²)
+                
+                # Calculate wetted perimeter
+                if channel_type.lower() == 'trapezoidal':
+                    bottom_width = channel_params['bottom_width']
+                    side_slope = channel_params['side_slope']
+                    # P = bottom width + 2 * sloped sides
+                    sloped_sides = water_depth * np.sqrt(1 + side_slope**2)
+                    wetted_perimeter = bottom_width + 2 * sloped_sides
+                else:  # rectangular
+                    wetted_perimeter = channel_params['bottom_width'] + 2 * water_depth
+                
+                # Ensure non-zero wetted perimeter
+                wetted_perimeter = max(wetted_perimeter, 0.001)
+                
+                # Hydraulic radius = Area / wetted perimeter
+                R = area / wetted_perimeter
+                
+                # Use energy slope (typically channel slope for uniform flow)
+                S = scenario.get('channel_slope', 0.001)
+                
+                # Manning's equation for roughness-based calculations
+                n = scenario.get('channel_roughness', 0.035)  # Default Manning's n
+                
+                # Calculate shear stress using τ = ρgRS
                 shear = rho * g * R * S
             else:
                 shear = 0
                 
         else:  # Downstream of dam
-            # Find closest point in tailwater results
-            idx = np.argmin(np.abs(tailwater['x'] - loc))
-            if idx < len(tailwater['wse']):
-                water_elevation = tailwater['wse'][idx]
-                bed_elevation = tailwater['z'][idx]
-                water_depth = max(0, water_elevation - bed_elevation)
-                
-                # Get velocity and Froude number if available
-                velocity = tailwater['v'][idx] if idx < len(tailwater['v']) else 0
-                froude = tailwater['fr'][idx] if idx < len(tailwater['fr']) else 0
-                
-                # Estimate shear stress
-                if water_depth > 0:
-                    rho = 1000
-                    g = 9.81
-                    R = water_depth  # Simplified
-                    S = scenario['downstream_slope']
-                    shear = rho * g * R * S
-                else:
-                    shear = 0
-            else:
+            # Check if tailwater data exists
+            if not tailwater or not all(key in tailwater for key in ['x', 'wse', 'z']):
                 water_depth = 0
                 velocity = 0
                 froude = 0
                 shear = 0
+            else:
+                # Find closest point in tailwater results
+                x_values = np.array(tailwater['x'])
+                if len(x_values) > 0:
+                    idx = np.argmin(np.abs(x_values - loc))
+                    if idx < len(tailwater.get('wse', [])) and idx < len(tailwater.get('z', [])):
+                        water_elevation = tailwater['wse'][idx]
+                        bed_elevation = tailwater['z'][idx]
+                        water_depth = max(0, water_elevation - bed_elevation)
+                        
+                        # Get velocity and Froude number if available
+                        velocity = tailwater.get('v', [0])[idx] if idx < len(tailwater.get('v', [])) else 0
+                        froude = tailwater.get('fr', [0])[idx] if idx < len(tailwater.get('fr', [])) else 0
+                        
+                        # Calculate shear stress more accurately
+                        if water_depth > 0:
+                            rho = 1000  # Water density
+                            g = 9.81    # Gravity
+                            
+                            # Get energy slope, or use bed slope as approximation
+                            S = tailwater.get('s', [scenario.get('downstream_slope', 0.001)])[idx] if idx < len(tailwater.get('s', [])) else scenario.get('downstream_slope', 0.001)
+                            
+                            # Get hydraulic radius if available, or calculate
+                            R = tailwater.get('R', [0])[idx] if idx < len(tailwater.get('R', [])) else water_depth
+                            
+                            # Calculate shear stress
+                            shear = rho * g * R * S
+                        else:
+                            shear = 0
+                    else:
+                        water_depth = 0
+                        velocity = 0
+                        froude = 0
+                        shear = 0
+                else:
+                    water_depth = 0
+                    velocity = 0
+                    froude = 0
+                    shear = 0
         
         # Determine parameter to highlight
         # Choose only one parameter to highlight - prioritize based on location
@@ -494,8 +554,8 @@ def create_cross_section_dashboard(scenario, results, locations=None, figsize=(1
             highlight_param = {'type': 'froude', 'value': froude, 'max_value': 2.0}
             
             # Check if near hydraulic jump
-            jump = results['hydraulic_jump']
-            if jump.get('jump_possible', False):
+            jump = results.get('hydraulic_jump', {})
+            if jump.get('jump_possible', False) and 'location' in jump:
                 jump_loc = jump['location']
                 if abs(loc - jump_loc) < 20:
                     # Highlight Froude number near jump
@@ -560,11 +620,11 @@ def create_animated_cross_section(scenario, results_list, location, fps=5, dpi=1
     # Create figure and axis
     fig, ax = plt.subplots(figsize=(10, 8))
     
-    # Extract channel parameters
+    # Extract channel parameters - with defaults for safety
     channel_type = 'trapezoidal'  # Default type
     channel_params = {
-        'bottom_width': scenario['channel_bottom_width'],
-        'side_slope': scenario['channel_side_slope']
+        'bottom_width': scenario.get('channel_bottom_width', 5.0),
+        'side_slope': scenario.get('channel_side_slope', 1.5)
     }
     
     # Calculate max depth across all results for consistent scaling
@@ -573,19 +633,27 @@ def create_animated_cross_section(scenario, results_list, location, fps=5, dpi=1
     for result in results_list:
         # Determine water depth at this location
         if location <= 0:  # Upstream of dam
-            water_elevation = result['upstream_level']
-            bed_elevation = scenario['dam_base_elevation']
+            water_elevation = result.get('upstream_level', scenario.get('dam_base_elevation', 0))
+            bed_elevation = scenario.get('dam_base_elevation', 0)
             water_depth = max(0, water_elevation - bed_elevation)
         else:  # Downstream of dam
-            tailwater = result['tailwater']
-            # Find closest point in tailwater results
-            idx = np.argmin(np.abs(tailwater['x'] - location))
-            if idx < len(tailwater['wse']):
-                water_elevation = tailwater['wse'][idx]
-                bed_elevation = tailwater['z'][idx]
-                water_depth = max(0, water_elevation - bed_elevation)
-            else:
+            tailwater = result.get('tailwater', {})
+            # Check if tailwater data exists
+            if not tailwater or not all(key in tailwater for key in ['x', 'wse', 'z']):
                 water_depth = 0
+            else:
+                # Find closest point in tailwater results
+                x_values = np.array(tailwater.get('x', []))
+                if len(x_values) > 0:
+                    idx = np.argmin(np.abs(x_values - location))
+                    if idx < len(tailwater.get('wse', [])) and idx < len(tailwater.get('z', [])):
+                        water_elevation = tailwater['wse'][idx]
+                        bed_elevation = tailwater['z'][idx]
+                        water_depth = max(0, water_elevation - bed_elevation)
+                    else:
+                        water_depth = 0
+                else:
+                    water_depth = 0
         
         max_depth = max(max_depth, water_depth)
     
@@ -645,15 +713,34 @@ def create_animated_cross_section(scenario, results_list, location, fps=5, dpi=1
         
         # Determine water depth and parameters at this location
         if location <= 0:  # Upstream of dam
-            water_elevation = result['upstream_level']
-            bed_elevation = scenario['dam_base_elevation']
+            water_elevation = result.get('upstream_level', scenario.get('dam_base_elevation', 0))
+            bed_elevation = scenario.get('dam_base_elevation', 0)
             water_depth = max(0, water_elevation - bed_elevation)
             
             # Estimate velocity
-            if water_depth > 0 and result['discharge'] > 0:
-                area = water_depth * scenario['channel_width_at_dam']
-                velocity = result['discharge'] / area
-                froude = velocity / np.sqrt(9.81 * water_depth)
+            discharge = result.get('discharge', 0)
+            if water_depth > 0 and discharge > 0:
+                # Calculate cross-sectional area correctly
+                if channel_type.lower() == 'trapezoidal':
+                    top_width = bottom_width + 2 * side_slope * water_depth
+                    area = (bottom_width + top_width) * water_depth / 2
+                else:  # rectangular
+                    area = water_depth * bottom_width
+                
+                # Ensure non-zero area
+                area = max(area, 0.001)
+                velocity = discharge / area
+                
+                # Calculate Froude number using hydraulic depth
+                if channel_type.lower() == 'trapezoidal':
+                    top_width = bottom_width + 2 * side_slope * water_depth
+                    hydraulic_depth = area / top_width
+                else:  # rectangular
+                    hydraulic_depth = water_depth
+                
+                # Avoid division by zero
+                hydraulic_depth = max(hydraulic_depth, 0.001)
+                froude = velocity / np.sqrt(9.81 * hydraulic_depth)
             else:
                 velocity = 0
                 froude = 0
@@ -662,25 +749,37 @@ def create_animated_cross_section(scenario, results_list, location, fps=5, dpi=1
             highlight_param = {'type': 'velocity', 'value': velocity, 'max_value': 5.0}
             
         else:  # Downstream of dam
-            tailwater = result['tailwater']
-            # Find closest point in tailwater results
-            idx = np.argmin(np.abs(tailwater['x'] - location))
-            if idx < len(tailwater['wse']):
-                water_elevation = tailwater['wse'][idx]
-                bed_elevation = tailwater['z'][idx]
-                water_depth = max(0, water_elevation - bed_elevation)
-                
-                # Get velocity and Froude number if available
-                velocity = tailwater['v'][idx] if idx < len(tailwater['v']) else 0
-                froude = tailwater['fr'][idx] if idx < len(tailwater['fr']) else 0
-            else:
+            tailwater = result.get('tailwater', {})
+            # Check if tailwater data exists
+            if not tailwater or not all(key in tailwater for key in ['x', 'wse', 'z']):
                 water_depth = 0
                 velocity = 0
                 froude = 0
+            else:
+                # Find closest point in tailwater results
+                x_values = np.array(tailwater.get('x', []))
+                if len(x_values) > 0:
+                    idx = np.argmin(np.abs(x_values - location))
+                    if idx < len(tailwater.get('wse', [])) and idx < len(tailwater.get('z', [])):
+                        water_elevation = tailwater['wse'][idx]
+                        bed_elevation = tailwater['z'][idx]
+                        water_depth = max(0, water_elevation - bed_elevation)
+                        
+                        # Get velocity and Froude number if available
+                        velocity = tailwater.get('v', [0])[idx] if idx < len(tailwater.get('v', [])) else 0
+                        froude = tailwater.get('fr', [0])[idx] if idx < len(tailwater.get('fr', [])) else 0
+                    else:
+                        water_depth = 0
+                        velocity = 0
+                        froude = 0
+                else:
+                    water_depth = 0
+                    velocity = 0
+                    froude = 0
             
             # Check if near a hydraulic jump
-            jump = result['hydraulic_jump']
-            if jump.get('jump_possible', False):
+            jump = result.get('hydraulic_jump', {})
+            if jump.get('jump_possible', False) and 'location' in jump:
                 jump_loc = jump['location']
                 if abs(location - jump_loc) < 10:
                     # Use Froude highlighting near a jump
@@ -858,7 +957,7 @@ def create_animated_cross_section(scenario, results_list, location, fps=5, dpi=1
         
         # Update parameter display
         if water_depth > 0:
-            discharge = result['discharge']
+            discharge = result.get('discharge', 0)
             param_str = f"Depth: {water_depth:.2f}m\nVelocity: {velocity:.2f}m/s\n" \
                          f"Froude: {froude:.2f}\nDischarge: {discharge:.2f}m³/s"
             flow_regime = "Subcritical" if froude < 1 else "Supercritical" if froude > 1 else "Critical"

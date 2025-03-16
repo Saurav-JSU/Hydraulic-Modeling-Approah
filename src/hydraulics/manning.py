@@ -209,32 +209,53 @@ def velocity_distribution(y_values: List[float], total_depth: float, average_vel
     velocities = []
     
     if distribution_type.lower() == 'log':
-        # Logarithmic velocity distribution
-        # u/u_max = 1 + 2.5 * ln(y/h)
-        u_max = average_velocity * 1.2  # Approximate, can be refined
+        # Improved logarithmic velocity distribution based on turbulent flow principles
+        # Using the universal velocity profile for turbulent open channel flow
+        
+        kappa = 0.41  # von Karman's constant
+        
+        # Estimate bed roughness height (y0) based on typical relative roughness
+        # This approximation reflects moderate channel bed conditions
+        bed_roughness = 0.03 * total_depth / 30
+        
+        # Calculate shear velocity (u*) from average velocity using the
+        # theoretical relationship for a logarithmic profile:
+        # u_avg / u* ≈ (1/κ) * [ln(h/y0) - 1]
+        u_star = average_velocity * kappa / (math.log(total_depth / bed_roughness) - 1)
         
         for y in y_values:
             if y <= 0 or y > total_depth:
                 raise ValueError(f"Height value {y} is outside valid range (0, {total_depth}]")
             
-            rel_depth = y / total_depth
-            if rel_depth < 0.05:  # Very close to bed
-                rel_depth = 0.05  # Limit to avoid extreme values
+            # Prevent mathematical singularity near the bed by setting a minimum height
+            effective_y = max(y, bed_roughness)
             
-            u = u_max * (1 + 2.5 * math.log(rel_depth))
-            velocities.append(max(0, u))  # Ensure non-negative
+            # Calculate velocity using the law of the wall for turbulent flow
+            # u(y) = (u* / κ) * ln(y / y0)
+            u = (u_star / kappa) * math.log(effective_y / bed_roughness)
+            
+            # Ensure velocity is non-negative (physical constraint)
+            velocities.append(max(0, u))
     
     elif distribution_type.lower() == 'power':
         # Power law velocity distribution
-        # u/u_max = (y/h)^(1/m), where m typically 6-7 for turbulent flow
-        m = 6  # Power law exponent
+        # u(y) = u_max * (y/h)^(1/m)
+        
+        # Use m = 7 for fully developed turbulent flow in open channels
+        # This is more appropriate than the previous value of 6
+        m = 7
+        
+        # Calculate maximum velocity from average velocity using the theoretical
+        # relationship for power law: u_max / u_avg = (m+1)/m
+        u_max = average_velocity * (m + 1) / m
         
         for y in y_values:
             if y <= 0 or y > total_depth:
                 raise ValueError(f"Height value {y} is outside valid range (0, {total_depth}]")
             
             rel_depth = y / total_depth
-            u = average_velocity * (rel_depth)**(1/m)
+            # Calculate velocity using power law with the proper exponent
+            u = u_max * rel_depth**(1/m)
             velocities.append(u)
     
     else:

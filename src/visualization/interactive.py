@@ -21,6 +21,10 @@ def create_interactive_profile(scenario, results_list, figsize=(14, 8)):
     Returns:
         tuple: (fig, ax) The figure and axis objects
     """
+    # Input validation
+    if not results_list:
+        raise ValueError("results_list cannot be empty")
+    
     # Create figure and axis
     fig, ax = plt.subplots(figsize=figsize)
     
@@ -29,7 +33,11 @@ def create_interactive_profile(scenario, results_list, figsize=(14, 8)):
     
     # Initial display - use the first result
     from .enhanced_profiles import plot_enhanced_profile
-    plot_enhanced_profile(scenario, results_list[0], ax=ax)
+    try:
+        plot_enhanced_profile(scenario, results_list[0], ax=ax)
+    except Exception as e:
+        ax.text(0.5, 0.5, f"Error plotting profile: {str(e)}", 
+               ha='center', va='center', transform=ax.transAxes)
     
     # Find max and min ranges for all results
     x_min = float('inf')
@@ -38,18 +46,41 @@ def create_interactive_profile(scenario, results_list, figsize=(14, 8)):
     y_max = float('-inf')
     
     for result in results_list:
-        tailwater = result['tailwater']
+        tailwater = result.get('tailwater', {})
+        
+        # Skip if tailwater data is missing or incomplete
+        if 'x' not in tailwater or len(tailwater.get('x', [])) == 0:
+            continue
+            
         x_min = min(x_min, -20)  # Include upstream portion
         x_max = max(x_max, np.max(tailwater['x']))
         
-        # Find min/max elevations
-        dam_base = scenario['dam_base_elevation']
-        bed_min = min(dam_base, np.min(tailwater['z']))
+        # Find min/max elevations safely
+        dam_base = scenario.get('dam_base_elevation', 0)
         
-        water_max = max(result['upstream_level'], np.max(tailwater['wse']))
+        # Ensure we don't operate on empty arrays
+        if len(tailwater.get('z', [])) > 0:
+            bed_min = min(dam_base, np.min(tailwater['z']))
+        else:
+            bed_min = dam_base
+        
+        # Get water elevation
+        water_max = result.get('upstream_level', dam_base)
+        
+        # Check if we have water surface elevations downstream
+        if len(tailwater.get('wse', [])) > 0:
+            water_max = max(water_max, np.max(tailwater['wse']))
         
         y_min = min(y_min, bed_min)
         y_max = max(y_max, water_max)
+    
+    # Handle case where no valid data was found
+    if x_min == float('inf') or x_max == float('-inf'):
+        x_min, x_max = -20, 200  # Default range
+    if y_min == float('inf') or y_max == float('-inf'):
+        dam_base = scenario.get('dam_base_elevation', 0)
+        dam_height = scenario.get('dam_crest_elevation', 10) - dam_base
+        y_min, y_max = dam_base - 1, dam_base + dam_height + 3  # Default range
     
     # Add some padding
     x_min -= 5
@@ -67,9 +98,16 @@ def create_interactive_profile(scenario, results_list, figsize=(14, 8)):
     ax_y_range = plt.axes([0.1, 0.05, 0.65, 0.03])
     
     # Get water level range from results
-    water_levels = [result['upstream_level'] for result in results_list]
-    min_level = min(water_levels)
-    max_level = max(water_levels)
+    water_levels = [result.get('upstream_level', 0) for result in results_list]
+    min_level = min(water_levels) if water_levels else 0
+    max_level = max(water_levels) if water_levels else 10
+    
+    # Ensure we have a valid range
+    if min_level == max_level:
+        max_level = min_level + 1  # Add 1m to create a valid range
+    
+    # Initial water level
+    initial_level = results_list[0].get('upstream_level', min_level) if results_list else min_level
     
     # Create sliders
     water_level_slider = Slider(
@@ -77,7 +115,7 @@ def create_interactive_profile(scenario, results_list, figsize=(14, 8)):
         label='Water Level (m)',
         valmin=min_level,
         valmax=max_level,
-        valinit=results_list[0]['upstream_level']
+        valinit=initial_level
     )
     
     x_range_slider = Slider(
@@ -109,7 +147,7 @@ def create_interactive_profile(scenario, results_list, figsize=(14, 8)):
         # Find the closest result to the selected water level
         target_level = water_level_slider.val
         closest_index = min(range(len(results_list)), 
-                          key=lambda i: abs(results_list[i]['upstream_level'] - target_level))
+                          key=lambda i: abs(results_list[i].get('upstream_level', 0) - target_level))
         
         # Get the corresponding result
         result = results_list[closest_index]
@@ -119,7 +157,14 @@ def create_interactive_profile(scenario, results_list, figsize=(14, 8)):
         color_by = color_option.lower() if color_option != 'None' else None
         
         # Plot the profile with the selected result
-        plot_enhanced_profile(scenario, result, ax=ax, color_by=color_by)
+        try:
+            plot_enhanced_profile(scenario, result, ax=ax, color_by=color_by)
+        except Exception as e:
+            ax.text(0.5, 0.5, f"Error plotting profile: {str(e)}", 
+                   ha='center', va='center', transform=ax.transAxes)
+            # Set basic axes properties to maintain display
+            ax.set_xlabel('Distance from Dam (m)')
+            ax.set_ylabel('Elevation (m)')
         
         # Adjust x and y ranges based on sliders
         x_center = (x_max + x_min) / 2
@@ -130,10 +175,11 @@ def create_interactive_profile(scenario, results_list, figsize=(14, 8)):
         y_range = (y_max - y_min) * (1 - 0.9 * y_range_slider.val)
         ax.set_ylim(y_center - y_range/2, y_center + y_range/2)
         
-        # Add title with current water level
-        ax.set_title(f'Water Surface Profile (Level: {result["upstream_level"]:.2f} m, '
-                    f'Discharge: {result["discharge"]:.2f} m³/s)', 
-                    fontsize=14, fontweight='bold')
+        # Add title with current water level and discharge (safely)
+        discharge = result.get('discharge', 0)
+        title = f'Water Surface Profile (Level: {result.get("upstream_level", 0):.2f} m, ' \
+                f'Discharge: {discharge:.2f} m³/s)'
+        ax.set_title(title, fontsize=14, fontweight='bold')
         
         # Redraw canvas
         fig.canvas.draw_idle()
@@ -188,11 +234,25 @@ def create_interactive_cross_section_viewer(scenario, results, figsize=(14, 10))
     
     # Plot the main profile
     from .enhanced_profiles import plot_enhanced_profile
-    plot_enhanced_profile(scenario, results, ax=ax_profile)
+    try:
+        plot_enhanced_profile(scenario, results, ax=ax_profile)
+    except Exception as e:
+        ax_profile.text(0.5, 0.5, f"Error plotting profile: {str(e)}", 
+                      ha='center', va='center', transform=ax_profile.transAxes)
+        ax_profile.set_xlabel('Distance from Dam (m)')
+        ax_profile.set_ylabel('Elevation (m)')
     
-    # Extract data
-    tailwater = results['tailwater']
-    x_values = tailwater['x']
+    # Extract data safely
+    tailwater = results.get('tailwater', {})
+    x_values = tailwater.get('x', [])
+    
+    # Ensure we have data to work with
+    if not x_values:
+        ax_profile.text(0.5, 0.3, "No x-coordinate data available", 
+                      ha='center', va='center', transform=ax_profile.transAxes)
+        ax_cross.text(0.5, 0.5, "No cross-section data available", 
+                     ha='center', va='center', transform=ax_cross.transAxes)
+        return fig, (ax_profile, ax_cross)
     
     # Create a location marker (vertical line) in the profile
     location_line = ax_profile.axvline(x=0, color='red', linestyle='--', linewidth=2)
@@ -202,7 +262,7 @@ def create_interactive_cross_section_viewer(scenario, results, figsize=(14, 10))
     
     # Determine x range
     x_min = -20  # Include upstream portion
-    x_max = np.max(x_values)
+    x_max = np.max(x_values) if len(x_values) > 0 else 200
     
     # Create location slider
     location_slider = Slider(
@@ -234,49 +294,120 @@ def create_interactive_cross_section_viewer(scenario, results, figsize=(14, 10))
         
         # Determine water depth and parameters at this location
         if loc <= 0:  # Upstream of dam
-            water_elevation = results['upstream_level']
-            bed_elevation = scenario['dam_base_elevation']
+            water_elevation = results.get('upstream_level', 0)
+            bed_elevation = scenario.get('dam_base_elevation', 0)
             water_depth = max(0, water_elevation - bed_elevation)
             
+            # Get channel parameters
+            channel_width = scenario.get('channel_width_at_dam', 5.0)
+            side_slope = scenario.get('channel_side_slope', 0)
+            
+            # Calculate top width for trapezoidal section
+            top_width = channel_width + 2 * side_slope * water_depth
+            
+            # Calculate cross-sectional area
+            area = 0.5 * (channel_width + top_width) * water_depth
+            
+            # Ensure non-zero area to avoid division by zero
+            area = max(area, 0.001)
+            
             # Estimate velocity
-            if water_depth > 0 and results['discharge'] > 0:
-                area = water_depth * scenario['channel_width_at_dam']
-                velocity = results['discharge'] / area
-                froude = velocity / np.sqrt(9.81 * water_depth)
+            discharge = results.get('discharge', 0)
+            if water_depth > 0 and discharge > 0:
+                velocity = discharge / area
+                
+                # Calculate Froude number using hydraulic depth
+                hydraulic_depth = area / top_width if top_width > 0 else water_depth
+                hydraulic_depth = max(hydraulic_depth, 0.001)  # Avoid division by zero
+                froude = velocity / np.sqrt(9.81 * hydraulic_depth)
             else:
                 velocity = 0
                 froude = 0
                 
-            # Estimate shear stress (simplified τ = ρgRS)
+            # Estimate shear stress using proper hydraulic radius
             if water_depth > 0:
-                rho = 1000  # Water density
-                g = 9.81     # Gravity
-                R = water_depth  # Simplified hydraulic radius
-                S = scenario['channel_slope']
+                rho = 1000  # Water density (kg/m³)
+                g = 9.81    # Gravity (m/s²)
+                
+                # Calculate wetted perimeter
+                if side_slope > 0:
+                    # Trapezoidal channel
+                    sloped_sides = water_depth * np.sqrt(1 + side_slope**2)
+                    wetted_perimeter = channel_width + 2 * sloped_sides
+                else:
+                    # Rectangular channel
+                    wetted_perimeter = channel_width + 2 * water_depth
+                
+                # Ensure non-zero wetted perimeter
+                wetted_perimeter = max(wetted_perimeter, 0.001)
+                
+                # Calculate hydraulic radius
+                R = area / wetted_perimeter
+                
+                # Get slope
+                S = scenario.get('channel_slope', 0.001)
+                
+                # Calculate shear stress
                 shear = rho * g * R * S
             else:
                 shear = 0
                 
         else:  # Downstream of dam
             # Find closest point in tailwater results
-            idx = np.argmin(np.abs(x_values - loc))
-            if idx < len(tailwater['wse']):
-                water_elevation = tailwater['wse'][idx]
-                bed_elevation = tailwater['z'][idx]
-                water_depth = max(0, water_elevation - bed_elevation)
+            if len(x_values) > 0:
+                idx = np.argmin(np.abs(np.array(x_values) - loc))
                 
-                # Get velocity and Froude number if available
-                velocity = tailwater['v'][idx] if idx < len(tailwater['v']) else 0
-                froude = tailwater['fr'][idx] if idx < len(tailwater['fr']) else 0
-                
-                # Estimate shear stress
-                if water_depth > 0:
-                    rho = 1000
-                    g = 9.81
-                    R = water_depth  # Simplified
-                    S = scenario['downstream_slope']
-                    shear = rho * g * R * S
+                # Check array bounds before accessing
+                if idx < len(tailwater.get('wse', [])) and idx < len(tailwater.get('z', [])):
+                    water_elevation = tailwater['wse'][idx]
+                    bed_elevation = tailwater['z'][idx]
+                    water_depth = max(0, water_elevation - bed_elevation)
+                    
+                    # Get velocity and Froude number if available
+                    velocity = tailwater.get('v', [0])[idx] if idx < len(tailwater.get('v', [])) else 0
+                    froude = tailwater.get('fr', [0])[idx] if idx < len(tailwater.get('fr', [])) else 0
+                    
+                    # Get channel parameters
+                    channel_width = scenario.get('channel_bottom_width', 5.0)
+                    side_slope = scenario.get('channel_side_slope', 0)
+                    
+                    # Estimate shear stress with proper hydraulic radius
+                    if water_depth > 0:
+                        rho = 1000  # Water density (kg/m³)
+                        g = 9.81    # Gravity (m/s²)
+                        
+                        # Calculate top width for trapezoidal section
+                        top_width = channel_width + 2 * side_slope * water_depth
+                        
+                        # Calculate cross-sectional area
+                        area = 0.5 * (channel_width + top_width) * water_depth
+                        
+                        # Calculate wetted perimeter
+                        if side_slope > 0:
+                            # Trapezoidal channel
+                            sloped_sides = water_depth * np.sqrt(1 + side_slope**2)
+                            wetted_perimeter = channel_width + 2 * sloped_sides
+                        else:
+                            # Rectangular channel
+                            wetted_perimeter = channel_width + 2 * water_depth
+                        
+                        # Ensure non-zero wetted perimeter
+                        wetted_perimeter = max(wetted_perimeter, 0.001)
+                        
+                        # Calculate hydraulic radius
+                        R = area / wetted_perimeter
+                        
+                        # Get slope
+                        S = scenario.get('downstream_slope', 0.001)
+                        
+                        # Calculate shear stress
+                        shear = rho * g * R * S
+                    else:
+                        shear = 0
                 else:
+                    water_depth = 0
+                    velocity = 0
+                    froude = 0
                     shear = 0
             else:
                 water_depth = 0
@@ -298,12 +429,19 @@ def create_interactive_cross_section_viewer(scenario, results, figsize=(14, 10))
         from .cross_sections import plot_channel_cross_section
         channel_type = 'trapezoidal'  # Default type
         channel_params = {
-            'bottom_width': scenario['channel_bottom_width'],
-            'side_slope': scenario['channel_side_slope']
+            'bottom_width': scenario.get('channel_bottom_width', 5.0),
+            'side_slope': scenario.get('channel_side_slope', 0)
         }
         
-        plot_channel_cross_section(ax_cross, channel_type, channel_params, water_depth, 
-                                  highlight_param=highlight_param, annotate=True)
+        try:
+            plot_channel_cross_section(ax_cross, channel_type, channel_params, water_depth, 
+                                     highlight_param=highlight_param, annotate=True)
+        except Exception as e:
+            ax_cross.text(0.5, 0.5, f"Error plotting cross-section: {str(e)}", 
+                        ha='center', va='center', transform=ax_cross.transAxes)
+            # Set basic axes properties
+            ax_cross.set_aspect('equal')
+            ax_cross.grid(True, alpha=0.3)
         
         # Set cross-section title
         if loc <= 0:
@@ -380,6 +518,10 @@ def create_interactive_flood_explorer(scenario, results_list, figsize=(14, 10)):
     Returns:
         tuple: (fig, axes) The figure and axes objects
     """
+    # Input validation
+    if not results_list:
+        raise ValueError("results_list cannot be empty")
+    
     # Create figure with multiple subplots
     fig = plt.figure(figsize=figsize)
     
@@ -403,9 +545,16 @@ def create_interactive_flood_explorer(scenario, results_list, figsize=(14, 10)):
     ax_slider = plt.axes([0.1, 0.05, 0.65, 0.03])
     
     # Get water level range from results
-    water_levels = [result['upstream_level'] for result in results_list]
-    min_level = min(water_levels)
-    max_level = max(water_levels)
+    water_levels = [result.get('upstream_level', 0) for result in results_list]
+    min_level = min(water_levels) if water_levels else 0
+    max_level = max(water_levels) if water_levels else 10
+    
+    # Ensure we have a valid range
+    if min_level == max_level:
+        max_level = min_level + 1  # Add 1m to create a valid range
+    
+    # Initial water level
+    initial_level = results_list[0].get('upstream_level', min_level)
     
     # Create slider
     level_slider = Slider(
@@ -413,7 +562,7 @@ def create_interactive_flood_explorer(scenario, results_list, figsize=(14, 10)):
         label='Water Level (m)',
         valmin=min_level,
         valmax=max_level,
-        valinit=water_levels[0]
+        valinit=initial_level
     )
     
     # Create check buttons for display options
@@ -422,27 +571,27 @@ def create_interactive_flood_explorer(scenario, results_list, figsize=(14, 10)):
     check_buttons = CheckButtons(ax_check, display_options, [True, True, True])
     
     # Plot discharge vs water level curve (static)
-    discharges = [result['discharge'] for result in results_list]
-    ax_discharge.plot(water_levels, discharges, 'bo-', linewidth=2)
-    ax_discharge.set_xlabel('Water Level (m)')
-    ax_discharge.set_ylabel('Discharge (m³/s)')
-    ax_discharge.set_title('Rating Curve')
-    ax_discharge.grid(True, alpha=0.3)
+    discharges = [result.get('discharge', 0) for result in results_list]
     
-    # Add dam crest line
-    dam_crest = scenario['dam_crest_elevation']
-    ax_discharge.axvline(x=dam_crest, color='r', linestyle='--', label=f'Dam Crest ({dam_crest:.1f}m)')
-    ax_discharge.legend(loc='upper left')
-    
-    # Create marker for current water level on discharge plot
-    water_marker, = ax_discharge.plot([water_levels[0]], [discharges[0]], 'ro', ms=10)
-    
-    # Create dictionaries to store dynamic plot elements
-    profile_elements = []
-    froude_elements = []
-    cross_elements = []
-    velocity_elements = []
-    energy_elements = []
+    # Only plot if we have data
+    if water_levels and discharges:
+        ax_discharge.plot(water_levels, discharges, 'bo-', linewidth=2)
+        ax_discharge.set_xlabel('Water Level (m)')
+        ax_discharge.set_ylabel('Discharge (m³/s)')
+        ax_discharge.set_title('Rating Curve')
+        ax_discharge.grid(True, alpha=0.3)
+        
+        # Add dam crest line
+        dam_crest = scenario.get('dam_crest_elevation', 0)
+        ax_discharge.axvline(x=dam_crest, color='r', linestyle='--', label=f'Dam Crest ({dam_crest:.1f}m)')
+        ax_discharge.legend(loc='upper left')
+        
+        # Create marker for current water level on discharge plot
+        water_marker, = ax_discharge.plot([water_levels[0]], [discharges[0]], 'ro', ms=10)
+    else:
+        ax_discharge.text(0.5, 0.5, "Insufficient data for rating curve",
+                        ha='center', va='center', transform=ax_discharge.transAxes)
+        water_marker = None
     
     # Function to update all plots
     def update(_):
@@ -451,13 +600,14 @@ def create_interactive_flood_explorer(scenario, results_list, figsize=(14, 10)):
         
         # Find the closest result to the selected water level
         closest_index = min(range(len(results_list)), 
-                          key=lambda i: abs(results_list[i]['upstream_level'] - target_level))
+                          key=lambda i: abs(results_list[i].get('upstream_level', 0) - target_level))
         
         # Get the selected result
         result = results_list[closest_index]
         
-        # Update marker on discharge plot
-        water_marker.set_data([result['upstream_level']], [result['discharge']])
+        # Update marker on discharge plot if it exists
+        if water_marker is not None:
+            water_marker.set_data([result.get('upstream_level', 0)], [result.get('discharge', 0)])
         
         # Get display options
         show_cross = check_buttons.get_status()[0]
@@ -473,20 +623,32 @@ def create_interactive_flood_explorer(scenario, results_list, figsize=(14, 10)):
         
         # Plot main profile
         if show_regimes:
-            from .flow_regimes import plot_flow_regime_profile
-            plot_flow_regime_profile(scenario, result, ax=ax_profile, 
-                                   show_annotations=show_annotations)
+            try:
+                from .flow_regimes import plot_flow_regime_profile
+                plot_flow_regime_profile(scenario, result, ax=ax_profile, 
+                                      show_annotations=show_annotations)
+            except Exception as e:
+                ax_profile.text(0.5, 0.5, f"Error plotting flow regime profile: {str(e)}", 
+                              ha='center', va='center', transform=ax_profile.transAxes)
+                ax_profile.set_xlabel('Distance from Dam (m)')
+                ax_profile.set_ylabel('Elevation (m)')
         else:
-            from .enhanced_profiles import plot_enhanced_profile
-            plot_enhanced_profile(scenario, result, ax=ax_profile, 
-                                show_annotations=show_annotations)
+            try:
+                from .enhanced_profiles import plot_enhanced_profile
+                plot_enhanced_profile(scenario, result, ax=ax_profile, 
+                                   show_annotations=show_annotations)
+            except Exception as e:
+                ax_profile.text(0.5, 0.5, f"Error plotting enhanced profile: {str(e)}", 
+                              ha='center', va='center', transform=ax_profile.transAxes)
+                ax_profile.set_xlabel('Distance from Dam (m)')
+                ax_profile.set_ylabel('Elevation (m)')
         
         # Extract data for other plots
-        tailwater = result['tailwater']
-        x_values = tailwater['x']
+        tailwater = result.get('tailwater', {})
+        x_values = tailwater.get('x', [])
         
         # Plot Froude number profile
-        if len(tailwater['fr']) > 0:
+        if 'fr' in tailwater and len(tailwater['fr']) > 0 and len(x_values) == len(tailwater['fr']):
             ax_froude.plot(x_values, tailwater['fr'], 'r-', linewidth=2)
             ax_froude.axhline(y=1, color='k', linestyle='--', 
                            label='Critical Flow (Fr=1)')
@@ -496,8 +658,17 @@ def create_interactive_flood_explorer(scenario, results_list, figsize=(14, 10)):
                                color='blue', alpha=0.2, label='Subcritical')
             ax_froude.fill_between(x_values, np.ones_like(x_values), 2,
                                color='red', alpha=0.2, label='Supercritical')
+        else:
+            ax_froude.text(0.5, 0.5, "No Froude number data available", 
+                         ha='center', va='center', transform=ax_froude.transAxes)
         
-        ax_froude.set_xlim(ax_profile.get_xlim())
+        # Set Froude axis properties
+        try:
+            ax_froude.set_xlim(ax_profile.get_xlim())
+        except:
+            # Default limits if profile limits can't be obtained
+            ax_froude.set_xlim(-20, 200)
+            
         ax_froude.set_xlabel('Distance (m)')
         ax_froude.set_ylabel('Froude Number')
         ax_froude.set_title('Froude Number Profile')
@@ -505,11 +676,11 @@ def create_interactive_flood_explorer(scenario, results_list, figsize=(14, 10)):
         ax_froude.legend(loc='upper right', fontsize=8)
         
         # Plot cross-section (if enabled)
-        if show_cross:
+        if show_cross and len(x_values) > 0:
             # Choose a location for the cross-section
             # Default to a hydraulic jump if present, otherwise middle of channel
-            jump = result['hydraulic_jump']
-            if jump.get('jump_possible', False):
+            jump = result.get('hydraulic_jump', {})
+            if jump.get('jump_possible', False) and 'location' in jump:
                 loc = jump['location']
             else:
                 loc = x_values[len(x_values)//2] if len(x_values) > 0 else 50
@@ -521,35 +692,59 @@ def create_interactive_flood_explorer(scenario, results_list, figsize=(14, 10)):
             from .cross_sections import plot_channel_cross_section
             channel_type = 'trapezoidal'
             channel_params = {
-                'bottom_width': scenario['channel_bottom_width'],
-                'side_slope': scenario['channel_side_slope']
+                'bottom_width': scenario.get('channel_bottom_width', 5.0),
+                'side_slope': scenario.get('channel_side_slope', 0)
             }
             
             # Determine water depth at this location
             if loc <= 0:  # Upstream of dam
-                water_elevation = result['upstream_level']
-                bed_elevation = scenario['dam_base_elevation']
+                water_elevation = result.get('upstream_level', 0)
+                bed_elevation = scenario.get('dam_base_elevation', 0)
                 water_depth = max(0, water_elevation - bed_elevation)
                 
+                # Get channel parameters for calculations
+                channel_width = scenario.get('channel_width_at_dam', 5.0)
+                side_slope = scenario.get('channel_side_slope', 0)
+                
+                # Calculate top width for trapezoidal section
+                top_width = channel_width + 2 * side_slope * water_depth
+                
+                # Calculate cross-sectional area
+                area = 0.5 * (channel_width + top_width) * water_depth
+                
+                # Ensure non-zero area
+                area = max(area, 0.001)
+                
                 # Estimate velocity and Froude number
-                if water_depth > 0 and result['discharge'] > 0:
-                    area = water_depth * scenario['channel_width_at_dam']
-                    velocity = result['discharge'] / area
-                    froude = velocity / np.sqrt(9.81 * water_depth)
+                discharge = result.get('discharge', 0)
+                if water_depth > 0 and discharge > 0:
+                    velocity = discharge / area
+                    
+                    # Calculate hydraulic depth for Froude number
+                    hydraulic_depth = area / top_width if top_width > 0 else water_depth
+                    hydraulic_depth = max(hydraulic_depth, 0.001)  # Avoid division by zero
+                    froude = velocity / np.sqrt(9.81 * hydraulic_depth)
                 else:
                     velocity = 0
                     froude = 0
             else:  # Downstream of dam
                 # Find closest point in tailwater results
-                idx = np.argmin(np.abs(x_values - loc))
-                if idx < len(tailwater['wse']):
-                    water_elevation = tailwater['wse'][idx]
-                    bed_elevation = tailwater['z'][idx]
-                    water_depth = max(0, water_elevation - bed_elevation)
+                if len(x_values) > 0:
+                    idx = np.argmin(np.abs(np.array(x_values) - loc))
                     
-                    # Get velocity and Froude number if available
-                    velocity = tailwater['v'][idx] if idx < len(tailwater['v']) else 0
-                    froude = tailwater['fr'][idx] if idx < len(tailwater['fr']) else 0
+                    # Check array bounds before accessing
+                    if idx < len(tailwater.get('wse', [])) and idx < len(tailwater.get('z', [])):
+                        water_elevation = tailwater['wse'][idx]
+                        bed_elevation = tailwater['z'][idx]
+                        water_depth = max(0, water_elevation - bed_elevation)
+                        
+                        # Get velocity and Froude number if available
+                        velocity = tailwater.get('v', [0])[idx] if idx < len(tailwater.get('v', [])) else 0
+                        froude = tailwater.get('fr', [0])[idx] if idx < len(tailwater.get('fr', [])) else 0
+                    else:
+                        water_depth = 0
+                        velocity = 0
+                        froude = 0
                 else:
                     water_depth = 0
                     velocity = 0
@@ -561,8 +756,15 @@ def create_interactive_flood_explorer(scenario, results_list, figsize=(14, 10)):
             else:
                 highlight_param = None
             
-            plot_channel_cross_section(ax_cross, channel_type, channel_params, water_depth,
-                                     highlight_param=highlight_param, annotate=show_annotations)
+            try:
+                plot_channel_cross_section(ax_cross, channel_type, channel_params, water_depth,
+                                         highlight_param=highlight_param, annotate=show_annotations)
+            except Exception as e:
+                ax_cross.text(0.5, 0.5, f"Error plotting cross-section: {str(e)}", 
+                            ha='center', va='center', transform=ax_cross.transAxes)
+                # Set basic axes properties
+                ax_cross.set_aspect('equal')
+                ax_cross.grid(True, alpha=0.3)
             
             # Set title with location
             if loc <= 0:
@@ -573,39 +775,84 @@ def create_interactive_flood_explorer(scenario, results_list, figsize=(14, 10)):
             ax_cross.set_title(title)
         else:
             ax_cross.set_title("Cross-Section View (Disabled)")
+            ax_cross.text(0.5, 0.5, "Cross-section display disabled or no data available", 
+                        ha='center', va='center', transform=ax_cross.transAxes)
+            ax_cross.set_aspect('equal')
+            ax_cross.grid(True, alpha=0.3)
         
         # Plot velocity profile
-        if len(tailwater['v']) > 0:
-            ax_velocity.plot(x_values, tailwater['v'], 'g-', linewidth=2)
+        if 'v' in tailwater and len(tailwater['v']) > 0 and len(x_values) > 0:
+            # Ensure arrays have matching lengths
+            plot_length = min(len(x_values), len(tailwater['v']))
+            if plot_length > 0:
+                ax_velocity.plot(x_values[:plot_length], tailwater['v'][:plot_length], 'g-', linewidth=2)
+            else:
+                ax_velocity.text(0.5, 0.5, "Velocity data available but mismatched lengths", 
+                               ha='center', va='center', transform=ax_velocity.transAxes)
+        else:
+            ax_velocity.text(0.5, 0.5, "No velocity data available", 
+                           ha='center', va='center', transform=ax_velocity.transAxes)
         
-        ax_velocity.set_xlim(ax_profile.get_xlim())
+        # Set velocity axis properties
+        try:
+            ax_velocity.set_xlim(ax_profile.get_xlim())
+        except:
+            ax_velocity.set_xlim(-20, 200)
+            
         ax_velocity.set_xlabel('Distance (m)')
         ax_velocity.set_ylabel('Velocity (m/s)')
         ax_velocity.set_title('Velocity Profile')
         ax_velocity.grid(True, alpha=0.3)
         
         # Plot energy profile
-        if 'energy' in tailwater:
-            # Plot specific energy
-            specific_energy = tailwater['energy'] - tailwater['z']
-            ax_energy.plot(x_values, specific_energy, 'purple', linewidth=2)
+        if 'energy' in tailwater and 'z' in tailwater and len(tailwater['energy']) > 0 and len(tailwater['z']) > 0 and len(x_values) > 0:
+            # Ensure arrays have matching lengths
+            plot_length = min(len(x_values), len(tailwater['energy']), len(tailwater['z']))
+            if plot_length > 0:
+                # Calculate specific energy
+                specific_energy = np.zeros(plot_length)
+                for i in range(plot_length):
+                    specific_energy[i] = tailwater['energy'][i] - tailwater['z'][i]
+                
+                ax_energy.plot(x_values[:plot_length], specific_energy, 'purple', linewidth=2)
+            else:
+                ax_energy.text(0.5, 0.5, "Energy data available but mismatched lengths", 
+                             ha='center', va='center', transform=ax_energy.transAxes)
         else:
-            # Estimate specific energy as depth + velocity head
-            depths = tailwater['y']
-            velocities = tailwater['v']
-            if len(depths) > 0 and len(velocities) > 0:
-                specific_energy = depths + velocities**2 / (2 * 9.81)
-                ax_energy.plot(x_values, specific_energy, 'purple', linewidth=2)
+            # Try to estimate from depth and velocity
+            if 'y' in tailwater and 'v' in tailwater and len(tailwater['y']) > 0 and len(tailwater['v']) > 0 and len(x_values) > 0:
+                plot_length = min(len(x_values), len(tailwater['y']), len(tailwater['v']))
+                if plot_length > 0:
+                    # Estimate specific energy as depth + velocity head
+                    specific_energy = np.zeros(plot_length)
+                    for i in range(plot_length):
+                        depth = tailwater['y'][i]
+                        velocity = tailwater['v'][i]
+                        # Calculate E = y + v²/2g
+                        specific_energy[i] = depth + (velocity**2) / (2 * 9.81)
+                    
+                    ax_energy.plot(x_values[:plot_length], specific_energy, 'purple', linewidth=2)
+                else:
+                    ax_energy.text(0.5, 0.5, "Cannot calculate energy - mismatched data lengths", 
+                                 ha='center', va='center', transform=ax_energy.transAxes)
+            else:
+                ax_energy.text(0.5, 0.5, "No energy data available", 
+                             ha='center', va='center', transform=ax_energy.transAxes)
         
-        ax_energy.set_xlim(ax_profile.get_xlim())
+        # Set energy axis properties
+        try:
+            ax_energy.set_xlim(ax_profile.get_xlim())
+        except:
+            ax_energy.set_xlim(-20, 200)
+            
         ax_energy.set_xlabel('Distance (m)')
         ax_energy.set_ylabel('Specific Energy (m)')
         ax_energy.set_title('Energy Profile')
         ax_energy.grid(True, alpha=0.3)
         
         # Update the figure title
-        fig.suptitle(f'Water Level: {result["upstream_level"]:.2f}m, '
-                   f'Discharge: {result["discharge"]:.2f}m³/s', 
+        fig.suptitle(f'Water Level: {result.get("upstream_level", 0):.2f}m, '
+                   f'Discharge: {result.get("discharge", 0):.2f}m³/s', 
                    fontsize=16, fontweight='bold', y=0.98)
         
         # Redraw the figure

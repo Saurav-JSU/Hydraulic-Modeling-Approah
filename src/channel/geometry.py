@@ -141,7 +141,7 @@ class Channel:
         if discharge == 0:
             return 0
         
-        # Critical flow condition: Q²T/gA³ = 1
+        # Critical flow condition: Q²T/gA³ = 1, which is equivalent to Froude number = 1
         def critical_flow_function(y: float) -> float:
             if y <= 0:
                 return float('inf')
@@ -152,21 +152,43 @@ class Channel:
             if A <= 0 or T <= 0:
                 return float('inf')
             
+            # Return Froude number - 1
             return (discharge**2 * T) / (g * A**3) - 1
         
         # Use bisection method to find critical depth
         y_min, y_max = depth_range
         
-        # Check if bounds are valid
-        f_min = critical_flow_function(y_min)
-        f_max = critical_flow_function(y_max)
+        # We need to find a bracket where the function changes sign
+        # Expand search range if needed
+        attempts = 0
+        max_attempts = 20
         
-        if f_min * f_max > 0:
-            # If same sign, adjust the range
-            if f_min < 0:
-                y_max = y_max * 10
+        while attempts < max_attempts:
+            f_min = critical_flow_function(y_min)
+            f_max = critical_flow_function(y_max)
+            
+            if f_min * f_max <= 0:
+                # Found a bracket where function changes sign
+                break
+            
+            # Expand the search range systematically
+            if f_min > 0 and f_max > 0:
+                # Both positive, try smaller depths
+                y_min /= 2
+            elif f_min < 0 and f_max < 0:
+                # Both negative, try larger depths
+                y_max *= 2
             else:
-                y_min = y_min / 10
+                # One is infinite or NaN, adjust
+                if not np.isfinite(f_min):
+                    y_min = (y_min + y_max) / 4  # Try a smaller adjustment
+                if not np.isfinite(f_max):
+                    y_max = (y_min + y_max) * 1.5  # Try a larger adjustment
+                    
+            attempts += 1
+            
+        if attempts == max_attempts:
+            raise RuntimeError("Could not find a bracket for critical depth calculation")
         
         # Bisection method
         for i in range(max_iterations):
@@ -178,6 +200,7 @@ class Channel:
             
             if f_mid * f_min < 0:
                 y_max = y_mid
+                f_max = f_mid
             else:
                 y_min = y_mid
                 f_min = f_mid
@@ -435,20 +458,28 @@ class CompoundChannel(Channel):
             # Only main channel flow
             return self.main_channel.wetted_perimeter(depth)
         else:
-            # Main channel + floodplains
+            # Main channel at bankfull + floodplains
             main_wp = self.main_channel.wetted_perimeter(self.main_channel_depth)
             
-            # Subtract top width from main channel (interface with floodplains)
-            main_wp -= self.main_channel.top_width(self.main_channel_depth)
+            # First, remove the top width of the main channel from its wetted perimeter
+            # as this will be replaced by the interfaces with the floodplains
+            main_tw = self.main_channel.top_width(self.main_channel_depth)
+            main_wp -= main_tw
             
             # Calculate floodplain contribution
             floodplain_depth = depth - self.main_channel_depth
-            floodplain_wp = sum(fp.wetted_perimeter(floodplain_depth) for fp in self.floodplains)
+            floodplain_wp = 0
             
-            # Subtract bottom widths of floodplains (interface with main channel)
             for fp in self.floodplains:
-                if isinstance(fp, RectangularChannel) or isinstance(fp, TrapezoidalChannel):
-                    floodplain_wp -= fp.bottom_width
+                # Add wetted perimeter of each floodplain
+                fp_wp = fp.wetted_perimeter(floodplain_depth)
+                
+                # Subtract the bottom width of the floodplain if it has one
+                # (this is the interface with the main channel)
+                if hasattr(fp, 'bottom_width'):
+                    fp_wp -= fp.bottom_width
+                    
+                floodplain_wp += fp_wp
             
             return main_wp + floodplain_wp
     
@@ -471,7 +502,9 @@ class CompoundChannel(Channel):
         else:
             # Main channel + floodplains
             floodplain_depth = depth - self.main_channel_depth
-            return sum(fp.top_width(floodplain_depth) for fp in self.floodplains)
+            
+            # Include main channel's top width at bankfull depth plus floodplain widths
+            return self.main_channel.top_width(self.main_channel_depth) + sum(fp.top_width(floodplain_depth) for fp in self.floodplains)
     
     def conveyance(self, depth: float) -> float:
         """

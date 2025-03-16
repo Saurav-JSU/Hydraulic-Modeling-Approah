@@ -129,19 +129,28 @@ def apply_theme(theme='default'):
     
     Parameters:
         theme (str): Name of the theme to apply
+        
+    Returns:
+        dict: Color settings specific to the theme
     """
     if theme not in THEMES:
         print(f"Unknown theme: {theme}. Using default.")
         theme = 'default'
     
-    # Apply theme settings
+    # Apply theme settings - with error handling
     for key, value in THEMES[theme].items():
-        plt.rcParams[key] = value
+        try:
+            plt.rcParams[key] = value
+        except KeyError:
+            print(f"Warning: rcParam '{key}' not found. Skipping.")
     
-    # Set other common parameters
-    plt.rcParams['figure.figsize'] = (10, 6)
-    plt.rcParams['savefig.dpi'] = 300
-    plt.rcParams['savefig.bbox'] = 'tight'
+    # Set other common parameters - with error handling
+    try:
+        plt.rcParams['figure.figsize'] = (10, 6)
+        plt.rcParams['savefig.dpi'] = 300
+        plt.rcParams['savefig.bbox'] = 'tight'
+    except Exception as e:
+        print(f"Warning: Could not set some rcParams: {str(e)}")
     
     # Return color settings specific to the theme
     if theme == 'dark':
@@ -178,6 +187,10 @@ def style_axis_for_hydraulic_profile(ax, grid=True, show_legend=True):
         grid (bool): Whether to show the grid
         show_legend (bool): Whether to show the legend
     """
+    if ax is None:
+        print("Warning: No axes provided for styling.")
+        return
+    
     # Set grid style
     if grid:
         ax.grid(True, linestyle='--', alpha=0.3)
@@ -186,19 +199,32 @@ def style_axis_for_hydraulic_profile(ax, grid=True, show_legend=True):
     ax.set_xlabel('Distance (m)', fontsize=12)
     ax.set_ylabel('Elevation (m)', fontsize=12)
     
-    # Style the legend if requested
+    # Style the legend if requested and if a legend exists
     if show_legend:
-        legend = ax.legend(loc='upper right', framealpha=0.9, fancybox=True, shadow=True)
-        
-        # Adjust legend text sizes
-        for text in legend.get_texts():
-            text.set_fontsize(10)
+        legend = ax.get_legend()
+        if legend is not None:
+            # Use framealpha if available, otherwise set_alpha
+            try:
+                legend.set_framealpha(0.9)
+            except (AttributeError, TypeError):
+                # For older matplotlib versions
+                frame = legend.get_frame()
+                if frame is not None:
+                    frame.set_alpha(0.9)
+            
+            # Set text sizes
+            for text in legend.get_texts():
+                text.set_fontsize(10)
     
     # Add a subtle box around the axis
-    ax.spines['top'].set_visible(True)
-    ax.spines['right'].set_visible(True)
-    ax.spines['top'].set_alpha(0.2)
-    ax.spines['right'].set_alpha(0.2)
+    try:
+        ax.spines['top'].set_visible(True)
+        ax.spines['right'].set_visible(True)
+        ax.spines['top'].set_alpha(0.2)
+        ax.spines['right'].set_alpha(0.2)
+    except (AttributeError, KeyError):
+        # Some matplotlib versions might not have spines attribute
+        pass
 
 
 def add_colorbar(fig, ax, mappable, label, orientation='vertical', pad=0.05):
@@ -214,18 +240,26 @@ def add_colorbar(fig, ax, mappable, label, orientation='vertical', pad=0.05):
         pad (float): Padding between plot and colorbar
         
     Returns:
-        matplotlib.colorbar.Colorbar: The colorbar
+        matplotlib.colorbar.Colorbar or None: The colorbar or None if creation failed
     """
-    # Create colorbar
-    cbar = fig.colorbar(mappable, ax=ax, orientation=orientation, pad=pad)
+    if fig is None or ax is None or mappable is None:
+        print("Warning: Required parameters missing for colorbar creation.")
+        return None
     
-    # Set label
-    cbar.set_label(label, fontsize=11)
-    
-    # Style ticks
-    cbar.ax.tick_params(labelsize=9)
-    
-    return cbar
+    try:
+        # Create colorbar
+        cbar = fig.colorbar(mappable, ax=ax, orientation=orientation, pad=pad)
+        
+        # Set label
+        cbar.set_label(label, fontsize=11)
+        
+        # Style ticks
+        cbar.ax.tick_params(labelsize=9)
+        
+        return cbar
+    except Exception as e:
+        print(f"Warning: Could not create colorbar: {str(e)}")
+        return None
 
 
 def create_water_surface_segments(x, wse, bed, cmap_name='Blues', norm=None):
@@ -240,28 +274,43 @@ def create_water_surface_segments(x, wse, bed, cmap_name='Blues', norm=None):
         norm: normalization for coloring
         
     Returns:
-        LineCollection: Colored line segments for water surface
+        LineCollection or None: Colored line segments for water surface
     """
-    from matplotlib.collections import LineCollection
-    import matplotlib.colors as colors
+    # Validate inputs
+    if x is None or wse is None or bed is None:
+        print("Warning: Input arrays cannot be None for water surface segments.")
+        return None
     
-    # Create a colormap
-    cmap = plt.get_cmap(cmap_name)
+    # Ensure arrays have the same length and are not empty
+    if len(x) != len(wse) or len(x) != len(bed) or len(x) < 2:
+        print("Warning: Input arrays must have same length (at least 2) for water surface segments.")
+        return None
     
-    # Create segments for the water surface
-    points = np.array([x, wse]).T.reshape(-1, 1, 2)
-    segments = np.concatenate([points[:-1], points[1:]], axis=1)
-    
-    # Create a LineCollection
-    lc = LineCollection(segments, cmap=cmap, norm=norm, linewidth=2.5)
-    
-    # Create an array of depths to color by
-    depths = wse - bed
-    
-    # Set array based on depths (interpolate for the segments)
-    lc.set_array((depths[:-1] + depths[1:]) / 2)
-    
-    return lc
+    try:
+        from matplotlib.collections import LineCollection
+        import matplotlib.colors as colors
+        
+        # Create a colormap
+        cmap = plt.get_cmap(cmap_name)
+        
+        # Create segments for the water surface
+        points = np.array([x, wse]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        
+        # Create a LineCollection
+        lc = LineCollection(segments, cmap=cmap, norm=norm, linewidth=2.5)
+        
+        # Create an array of depths to color by
+        depths = wse - bed
+        
+        # Set array based on depths (interpolate for the segments)
+        if len(depths) > 1:
+            lc.set_array((depths[:-1] + depths[1:]) / 2)
+        
+        return lc
+    except Exception as e:
+        print(f"Warning: Error creating water surface segments: {str(e)}")
+        return None
 
 
 def plot_dam_with_shading(ax, x, profile, base_elevation):
@@ -274,56 +323,97 @@ def plot_dam_with_shading(ax, x, profile, base_elevation):
         profile (dict): Dam profile
         base_elevation (float): Base elevation
     """
-    from matplotlib.patches import Polygon
+    if ax is None or x is None or profile is None:
+        print("Warning: Required parameters missing for dam plotting.")
+        return
     
-    # Create dam outline
-    ax.plot(x, profile['z'], 'k-', linewidth=1.5)
+    # Check if profile contains z values
+    if not isinstance(profile, dict) or 'z' not in profile or len(profile['z']) != len(x):
+        print("Warning: Dam profile must contain 'z' key with array of same length as x.")
+        # Draw a simple dam as fallback
+        try:
+            center_x = np.mean(x) if len(x) > 0 else 0
+            dam_height = 10.0  # Arbitrary height if not provided
+            ax.plot([center_x, center_x], [base_elevation, base_elevation + dam_height], 'k-', linewidth=1.5)
+            ax.fill_betweenx([base_elevation, base_elevation + dam_height], 
+                           [center_x - 0.5, center_x - 0.5], 
+                           [center_x + 0.5, center_x + 0.5],
+                           color='#4F4F4F')
+            return
+        except Exception as e:
+            print(f"Warning: Could not draw simple dam: {str(e)}")
+            return
     
-    # Create dam body
-    dam_poly = np.column_stack([
-        np.concatenate([x, x[::-1]]),
-        np.concatenate([profile['z'], np.full_like(x, base_elevation)[::-1]])
-    ])
+    try:
+        from matplotlib.patches import Polygon
+        
+        # Create dam outline
+        ax.plot(x, profile['z'], 'k-', linewidth=1.5)
+        
+        # Ensure z values are valid for gradient calculation
+        z_max = np.max(profile['z'])
+        z_min = base_elevation
+        
+        # Check for division by zero
+        if z_max <= z_min:
+            # Use a simple color instead of gradient
+            dam_poly = np.column_stack([
+                np.concatenate([x, x[::-1]]),
+                np.concatenate([profile['z'], np.full_like(x, base_elevation)[::-1]])
+            ])
+            dam_patch = Polygon(dam_poly, closed=True, color='#4F4F4F')
+            ax.add_patch(dam_patch)
+            return
+        
+        # Create a custom gray gradient
+        from matplotlib.colors import LinearSegmentedColormap
+        dam_cmap = LinearSegmentedColormap.from_list(
+            'DamGradient', 
+            [(0, '#707070'), (0.5, '#505050'), (1, '#303030')],
+            N=256
+        )
+        
+        # Add shading based on height with safe computation
+        z_normalized = np.clip((profile['z'] - z_min) / (z_max - z_min), 0, 1)
+        
+        # Create a polygon collection for better shading
+        dam_patches = []
+        
+        # Create multiple patches for shading segments
+        for i in range(len(x) - 1):
+            patch = Polygon([
+                [x[i], profile['z'][i]],
+                [x[i+1], profile['z'][i+1]],
+                [x[i+1], base_elevation],
+                [x[i], base_elevation]
+            ])
+            dam_patches.append(patch)
+        
+        # Create patch collection
+        from matplotlib.collections import PatchCollection
+        dam_collection = PatchCollection(dam_patches, cmap=dam_cmap)
+        
+        # Set colors based on height
+        dam_collection.set_array(z_normalized)
+        
+        # Add to axis
+        ax.add_collection(dam_collection)
+        
+        # Add a subtle highlight line on top of dam
+        ax.plot(x, profile['z'], 'w-', linewidth=0.5, alpha=0.5)
     
-    # Add the dam body with gradient shading
-    from matplotlib.colors import LinearSegmentedColormap
-    
-    # Create a custom gray gradient
-    dam_cmap = LinearSegmentedColormap.from_list(
-        'DamGradient', 
-        [(0, '#707070'), (0.5, '#505050'), (1, '#303030')],
-        N=256
-    )
-    
-    # Add shading based on height
-    z_normalized = (profile['z'] - base_elevation) / (np.max(profile['z']) - base_elevation)
-    colors = dam_cmap(z_normalized)
-    
-    # Create a polygon collection for better shading
-    dam_patches = []
-    
-    # Create multiple patches for shading segments
-    for i in range(len(x) - 1):
-        patch = Polygon([
-            [x[i], profile['z'][i]],
-            [x[i+1], profile['z'][i+1]],
-            [x[i+1], base_elevation],
-            [x[i], base_elevation]
-        ])
-        dam_patches.append(patch)
-    
-    # Create patch collection
-    from matplotlib.collections import PatchCollection
-    dam_collection = PatchCollection(dam_patches, cmap=dam_cmap)
-    
-    # Set colors based on height
-    dam_collection.set_array(z_normalized)
-    
-    # Add to axis
-    ax.add_collection(dam_collection)
-    
-    # Add a subtle highlight line on top of dam
-    ax.plot(x, profile['z'], 'w-', linewidth=0.5, alpha=0.5)
+    except Exception as e:
+        print(f"Warning: Error plotting dam with shading: {str(e)}")
+        # Attempt a simpler dam visualization
+        try:
+            dam_poly = np.column_stack([
+                np.concatenate([x, x[::-1]]),
+                np.concatenate([profile['z'], np.full_like(x, base_elevation)[::-1]])
+            ])
+            dam_patch = Polygon(dam_poly, closed=True, color='#4F4F4F')
+            ax.add_patch(dam_patch)
+        except Exception as e2:
+            print(f"Warning: Could not draw simple dam: {str(e2)}")
 
 
 def plot_enhancement_effects(ax, water_surface, bed, froude, x):
@@ -337,52 +427,70 @@ def plot_enhancement_effects(ax, water_surface, bed, froude, x):
         froude (array): Froude numbers
         x (array): x-coordinates
     """
-    # Add wave patterns based on Froude number
-    for i in range(len(x) - 5):
-        # Skip if no water
-        if water_surface[i] <= bed[i]:
-            continue
-            
-        # Current depth and Froude number
-        depth = max(0.1, water_surface[i] - bed[i])
-        fr = froude[i]
+    if ax is None:
+        print("Warning: No axes provided for enhancement effects.")
+        return
+    
+    # Validate input arrays
+    if water_surface is None or bed is None or froude is None or x is None:
+        print("Warning: Input arrays cannot be None for enhancement effects.")
+        return
+    
+    # Ensure arrays have the same length
+    min_length = min(len(water_surface), len(bed), len(froude), len(x))
+    if min_length < 5:  # Need at least a few points for effects
+        print("Warning: Input arrays too short for enhancement effects.")
+        return
+    
+    try:
+        # Create local copies trimmed to the same length for safety
+        water = water_surface[:min_length]
+        bed_elev = bed[:min_length]
+        fr = froude[:min_length]
+        x_coords = x[:min_length]
         
-        # Skip some points for cleaner visualization
-        if i % 10 != 0:
-            continue
+        # Add wave patterns based on Froude number
+        for i in range(min_length - 5):
+            # Skip if no water
+            if water[i] <= bed_elev[i]:
+                continue
+                
+            # Current depth and Froude number
+            depth = max(0.1, water[i] - bed_elev[i])
+            fr_val = fr[i]
             
-        # Create different wave patterns based on flow regime
-        if fr < 0.8:  # Subcritical - smooth surface
-            n_points = 8
-            wave_x = np.linspace(x[i] - depth, x[i] + depth, n_points)
-            wave_amp = 0.01 * depth
-            wave_y = water_surface[i] + wave_amp * np.sin(np.linspace(0, 2*np.pi, n_points))
-            
-            # Add subtle wave line
-            ax.plot(wave_x, wave_y, 'white', linewidth=0.7, alpha=0.3)
-            
-        elif fr > 1.2:  # Supercritical - rough surface
-            n_points = 12
-            wave_x = np.linspace(x[i] - depth, x[i] + depth, n_points)
-            wave_amp = 0.04 * depth * min(fr, 3) / 3  # Scale with Froude
-            wave_y = water_surface[i] + wave_amp * np.sin(np.linspace(0, 4*np.pi, n_points))
-            
-            # Add more pronounced waves
-            ax.plot(wave_x, wave_y, 'white', linewidth=1, alpha=0.4)
-            
-        else:  # Near critical - transitional
-            # Just add a highlight at the surface
-            ax.plot([x[i] - depth/2, x[i] + depth/2], 
-                  [water_surface[i], water_surface[i]], 
-                  'white', linewidth=1.2, alpha=0.5)
+            # Skip some points for cleaner visualization
+            if i % 10 != 0:
+                continue
+                
+            # Create different wave patterns based on flow regime
+            if fr_val < 0.8:  # Subcritical - smooth surface
+                n_points = 8
+                wave_x = np.linspace(x_coords[i] - depth, x_coords[i] + depth, n_points)
+                wave_amp = 0.01 * depth
+                wave_y = water[i] + wave_amp * np.sin(np.linspace(0, 2*np.pi, n_points))
+                
+                # Add subtle wave line
+                ax.plot(wave_x, wave_y, 'white', linewidth=0.7, alpha=0.3)
+                
+            elif fr_val > 1.2:  # Supercritical - rough surface
+                n_points = 12
+                wave_x = np.linspace(x_coords[i] - depth, x_coords[i] + depth, n_points)
+                wave_amp = 0.04 * depth * min(fr_val, 3) / 3  # Scale with Froude
+                wave_y = water[i] + wave_amp * np.sin(np.linspace(0, 4*np.pi, n_points))
+                
+                # Add more pronounced waves
+                ax.plot(wave_x, wave_y, 'white', linewidth=1, alpha=0.4)
+                
+            else:  # Near critical - transitional
+                # Just add a highlight at the surface
+                ax.plot([x_coords[i] - depth/2, x_coords[i] + depth/2], 
+                      [water[i], water[i]], 
+                      'white', linewidth=1.2, alpha=0.5)
+    
+    except Exception as e:
+        print(f"Warning: Error plotting enhancement effects: {str(e)}")
 
-
-"""
-Fix for styling.py module to ensure compatibility with different matplotlib versions.
-
-The issue is with the Legend object's frame alpha setting method, which varies between
-matplotlib versions.
-"""
 
 def style_for_publication(fig, tight=True, dpi=300):
     """
@@ -392,61 +500,85 @@ def style_for_publication(fig, tight=True, dpi=300):
         fig (matplotlib.figure.Figure): The figure to style
         tight (bool): Whether to apply tight layout
         dpi (int): DPI for the figure
+        
+    Returns:
+        matplotlib.figure.Figure: The styled figure
     """
-    # Apply paper theme
-    apply_theme('paper')
+    if fig is None:
+        print("Warning: No figure provided for publication styling.")
+        return None
     
-    # Set figure size to typical publication dimensions (in inches)
-    fig.set_size_inches(7, 5)
-    
-    # Improve axis styling for all subplots
-    for ax in fig.get_axes():
-        # Thicker axis lines
-        for spine in ax.spines.values():
-            spine.set_linewidth(0.75)
+    try:
+        # Apply paper theme
+        apply_theme('paper')
         
-        # Adjust tick parameters
-        ax.tick_params(width=0.75, length=3, labelsize=9)
+        # Set figure size to typical publication dimensions (in inches)
+        fig.set_size_inches(7, 5)
         
-        # Set grid style
-        ax.grid(True, linestyle='-', alpha=0.2, linewidth=0.5)
-        
-        # Ensure axis labels are set with proper font size
-        if ax.get_xlabel():
-            ax.set_xlabel(ax.get_xlabel(), fontsize=10)
-        if ax.get_ylabel():
-            ax.set_ylabel(ax.get_ylabel(), fontsize=10)
-        if ax.get_title():
-            ax.set_title(ax.get_title(), fontsize=11, fontweight='bold')
-    
-    # Style the legends - updated to be compatible with different matplotlib versions
-    for ax in fig.get_axes():
-        legend = ax.get_legend()
-        if legend:
-            # Use a try/except block for compatibility
+        # Improve axis styling for all subplots
+        for ax in fig.get_axes():
+            # Thicker axis lines
             try:
-                # Modern matplotlib versions
-                legend.set_frame_on(True)
-                legend.set_framealpha(0.9)
-            except AttributeError:
-                # Alternative approach for older matplotlib versions
-                frame = legend.get_frame()
-                if frame:
-                    frame.set_alpha(0.9)
-                    frame.set_edgecolor('gray')
+                for spine in ax.spines.values():
+                    spine.set_linewidth(0.75)
+            except (AttributeError, KeyError):
+                pass
             
-            # Set text sizes - compatible with all versions
-            for text in legend.get_texts():
-                text.set_fontsize(8)
+            # Adjust tick parameters
+            try:
+                ax.tick_params(width=0.75, length=3, labelsize=9)
+            except AttributeError:
+                pass
+            
+            # Set grid style
+            ax.grid(True, linestyle='-', alpha=0.2, linewidth=0.5)
+            
+            # Ensure axis labels are set with proper font size
+            if ax.get_xlabel():
+                ax.set_xlabel(ax.get_xlabel(), fontsize=10)
+            if ax.get_ylabel():
+                ax.set_ylabel(ax.get_ylabel(), fontsize=10)
+            if ax.get_title():
+                ax.set_title(ax.get_title(), fontsize=11, fontweight='bold')
+        
+        # Style the legends - updated to be compatible with different matplotlib versions
+        for ax in fig.get_axes():
+            legend = ax.get_legend()
+            if legend:
+                # Use a try/except block for compatibility
+                try:
+                    # Modern matplotlib versions
+                    legend.set_frame_on(True)
+                    legend.set_framealpha(0.9)
+                except AttributeError:
+                    # Alternative approach for older matplotlib versions
+                    frame = legend.get_frame()
+                    if frame:
+                        frame.set_alpha(0.9)
+                        frame.set_edgecolor('gray')
+                
+                # Set text sizes - compatible with all versions
+                for text in legend.get_texts():
+                    text.set_fontsize(8)
+        
+        # Apply tight layout if requested
+        if tight:
+            try:
+                fig.tight_layout()
+            except Exception as e:
+                print(f"Warning: Could not apply tight layout: {str(e)}")
+        
+        # Set DPI
+        try:
+            fig.set_dpi(dpi)
+        except AttributeError:
+            print("Warning: Could not set figure DPI.")
+        
+        return fig
     
-    # Apply tight layout if requested
-    if tight:
-        fig.tight_layout()
-    
-    # Set DPI
-    fig.set_dpi(dpi)
-    
-    return fig
+    except Exception as e:
+        print(f"Warning: Error applying publication style: {str(e)}")
+        return fig
 
 
 def style_for_presentation(fig):
@@ -455,54 +587,75 @@ def style_for_presentation(fig):
     
     Parameters:
         fig (matplotlib.figure.Figure): The figure to style
+        
+    Returns:
+        matplotlib.figure.Figure: The styled figure
     """
-    # Apply presentation theme
-    apply_theme('presentation')
+    if fig is None:
+        print("Warning: No figure provided for presentation styling.")
+        return None
     
-    # Set figure size to typical presentation dimensions (in inches)
-    fig.set_size_inches(12, 8)
-    
-    # Improve axis styling for all subplots
-    for ax in fig.get_axes():
-        # Thicker axis lines
-        for spine in ax.spines.values():
-            spine.set_linewidth(1.5)
+    try:
+        # Apply presentation theme
+        apply_theme('presentation')
         
-        # Adjust tick parameters
-        ax.tick_params(width=1.5, length=6, labelsize=12)
+        # Set figure size to typical presentation dimensions (in inches)
+        fig.set_size_inches(12, 8)
         
-        # Set grid style
-        ax.grid(True, linestyle='-', alpha=0.3, linewidth=0.8)
-        
-        # Ensure axis labels are set with proper font size
-        if ax.get_xlabel():
-            ax.set_xlabel(ax.get_xlabel(), fontsize=14, fontweight='bold')
-        if ax.get_ylabel():
-            ax.set_ylabel(ax.get_ylabel(), fontsize=14, fontweight='bold')
-        if ax.get_title():
-            ax.set_title(ax.get_title(), fontsize=16, fontweight='bold')
-    
-    # Style the legends - updated to be compatible with different matplotlib versions
-    for ax in fig.get_axes():
-        legend = ax.get_legend()
-        if legend:
-            # Use a try/except block for compatibility
+        # Improve axis styling for all subplots
+        for ax in fig.get_axes():
+            # Thicker axis lines
             try:
-                # Modern matplotlib versions
-                legend.set_frame_on(True)
-                legend.set_framealpha(0.9)
-            except AttributeError:
-                # Alternative approach for older matplotlib versions
-                frame = legend.get_frame()
-                if frame:
-                    frame.set_alpha(0.9)
-                    frame.set_edgecolor('gray')
+                for spine in ax.spines.values():
+                    spine.set_linewidth(1.5)
+            except (AttributeError, KeyError):
+                pass
             
-            # Set text sizes - compatible with all versions
-            for text in legend.get_texts():
-                text.set_fontsize(12)
+            # Adjust tick parameters
+            try:
+                ax.tick_params(width=1.5, length=6, labelsize=12)
+            except AttributeError:
+                pass
+            
+            # Set grid style
+            ax.grid(True, linestyle='-', alpha=0.3, linewidth=0.8)
+            
+            # Ensure axis labels are set with proper font size
+            if ax.get_xlabel():
+                ax.set_xlabel(ax.get_xlabel(), fontsize=14, fontweight='bold')
+            if ax.get_ylabel():
+                ax.set_ylabel(ax.get_ylabel(), fontsize=14, fontweight='bold')
+            if ax.get_title():
+                ax.set_title(ax.get_title(), fontsize=16, fontweight='bold')
+        
+        # Style the legends - updated to be compatible with different matplotlib versions
+        for ax in fig.get_axes():
+            legend = ax.get_legend()
+            if legend:
+                # Use a try/except block for compatibility
+                try:
+                    # Modern matplotlib versions
+                    legend.set_frame_on(True)
+                    legend.set_framealpha(0.9)
+                except AttributeError:
+                    # Alternative approach for older matplotlib versions
+                    frame = legend.get_frame()
+                    if frame:
+                        frame.set_alpha(0.9)
+                        frame.set_edgecolor('gray')
+                
+                # Set text sizes - compatible with all versions
+                for text in legend.get_texts():
+                    text.set_fontsize(12)
+        
+        # Apply tight layout
+        try:
+            fig.tight_layout()
+        except Exception as e:
+            print(f"Warning: Could not apply tight layout: {str(e)}")
+        
+        return fig
     
-    # Apply tight layout
-    fig.tight_layout()
-    
-    return fig
+    except Exception as e:
+        print(f"Warning: Error applying presentation style: {str(e)}")
+        return fig

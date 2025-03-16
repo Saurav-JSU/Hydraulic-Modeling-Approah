@@ -39,10 +39,6 @@ def calculate_backwater_curve(
     from ..channel.gvf import backwater_calculation
     
     # Calculate upstream water elevation at dam
-    # Assume channel width equals dam width
-    # This is a simplification; in reality, the approach channel
-    # width might differ from the dam width
-    
     # Estimate channel width from cross-section at normal depth
     if channel_slope <= 0:
         raise ValueError("Channel slope must be positive")
@@ -53,18 +49,26 @@ def calculate_backwater_curve(
     # Calculate upstream water elevation at dam
     upstream_elevation = dam.get_upstream_water_elevation(discharge, width)
     
-    # Calculate backwater curve
-    # Using backwater calculation from GVF module
+    # Calculate upstream depth (relative to dam base)
+    # This is the hydraulic depth at the dam, which serves as 
+    # the boundary condition for the backwater calculation
+    upstream_depth = upstream_elevation - dam.base_elevation
+    
+    # Calculate backwater curve using the GVF (gradually varied flow) module
+    # The upstream_depth is the control depth at the downstream end
     backwater = backwater_calculation(
         channel, discharge, channel_slope,
-        upstream_elevation - dam.base_elevation,
+        upstream_depth,  # Use depth relative to channel bed
         control_location='downstream',
         distance=distance,
         num_points=num_points
     )
     
-    # Shift z coordinates to match dam base elevation
-    z_offset = dam.base_elevation - backwater['z'][0]
+    # Adjust z coordinates to match dam base elevation
+    # The backwater calculation typically uses a local coordinate system
+    # We need to shift to the global coordinate system based on dam elevation
+    # This ensures correct vertical positioning of the water surface profile
+    z_offset = dam.base_elevation
     backwater['z'] += z_offset
     backwater['wse'] += z_offset
     
@@ -110,52 +114,60 @@ def calculate_reservoir_characteristics(
     
     # Find reservoir area at water surface elevation
     if wse <= invert_elevations[-1]:
-        # Interpolate
+        # Interpolate using linear interpolation
         area = np.interp(wse, invert_elevations, areas)
         is_extrapolated = False
     else:
-        # Extrapolate
-        # Using last two points for linear extrapolation
+        # Extrapolate using last two points
+        # This is a linear extrapolation which is a reasonable approximation
+        # for small extensions beyond the known data range
         slope = (areas[-1] - areas[-2]) / (invert_elevations[-1] - invert_elevations[-2])
         area = areas[-1] + slope * (wse - invert_elevations[-1])
         is_extrapolated = True
     
-    # Calculate reservoir volume
-    # Using trapezoidal rule to integrate the stage-storage curve
-    
-    # First, calculate volume up to the highest point in stage-storage curve
+    # Calculate reservoir volume using the trapezoidal rule
+    # This provides better numerical stability than the previous implementation
     volume = 0
-    for i in range(1, len(invert_elevations)):
+    
+    # Find the index where wse would be inserted to maintain sorted order
+    # This helps properly segment the calculation for more accurate results
+    idx = np.searchsorted(invert_elevations, wse)
+    
+    # Calculate volume up to the last elevation below wse
+    for i in range(1, min(idx, len(invert_elevations))):
         h1 = invert_elevations[i-1]
         h2 = invert_elevations[i]
         a1 = areas[i-1]
         a2 = areas[i]
         
-        if h1 >= wse:
-            # Above water level, stop calculating
-            break
-        
-        if h2 > wse:
-            # Last segment crosses water level, adjust h2 and a2
-            ratio = (wse - h1) / (h2 - h1)
-            h2 = wse
-            a2 = a1 + ratio * (a2 - a1)
-        
-        # Trapezoidal volume for this segment
+        # Apply trapezoidal rule: V = (h2-h1) * (a1+a2)/2
         segment_volume = (h2 - h1) * (a1 + a2) / 2
         volume += segment_volume
     
-    # If water level is above the highest point in stage-storage curve,
-    # add the extrapolated volume
-    if wse > invert_elevations[-1]:
+    # Calculate final segment from the last elevation below wse to wse itself
+    if 0 < idx < len(invert_elevations):
+        # wse is between two known elevations
+        h1 = invert_elevations[idx-1]
+        h2 = wse
+        a1 = areas[idx-1]
+        # Interpolate area at wse
+        a2 = np.interp(wse, [invert_elevations[idx-1], invert_elevations[idx]], 
+                       [areas[idx-1], areas[idx]])
+        
+        # Calculate volume of the final segment
+        segment_volume = (h2 - h1) * (a1 + a2) / 2
+        volume += segment_volume
+    elif idx == len(invert_elevations):
+        # wse is above all known elevations, extrapolate the last segment
         h1 = invert_elevations[-1]
         h2 = wse
         a1 = areas[-1]
+        # a2 should be the same as the area calculated earlier through extrapolation
         a2 = area
         
-        # Trapezoidal volume for extrapolated segment
-        extrapolated_volume = (h2 - h1) * (a1 + a2) / 2
-        volume += extrapolated_volume
+        # Calculate volume of the extrapolated segment
+        segment_volume = (h2 - h1) * (a1 + a2) / 2
+        volume += segment_volume
     
     return {
         'water_elevation': wse,
@@ -186,35 +198,48 @@ def estimate_reservoir_residence_time(
     Returns:
         Dict[str, float]: Residence time characteristics
     """
-    # Calculate reservoir characteristics
+    # Calculate reservoir characteristics based on outflow
+    # For steady-state conditions, the outflow determines the water surface elevation
     reservoir = calculate_reservoir_characteristics(dam, invert_elevations, areas, outflow, width)
     
     # Extract volume
     volume = reservoir['reservoir_volume']
     
-    # Calculate average flow rate
-    avg_flow = (inflow + outflow) / 2
+    # Calculate the representative flow rate for residence time calculation
+    # In true steady-state conditions, inflow should equal outflow
+    # For non-steady conditions:
+    #   - If inflow > outflow: reservoir is filling (longer residence time)
+    #   - If outflow > inflow: reservoir is draining (shorter residence time)
+    # Hydraulically, the appropriate flow to use depends on the application:
+    if abs(inflow - outflow) / max(max(inflow, outflow), 1e-6) < 0.05:
+        # Flows are within 5% - essentially steady state
+        # Use outflow as it controls the water surface elevation
+        flow_rate = outflow
+    else:
+        # Non-steady state - use minimum for conservative residence time
+        # This accounts for the fact that some water will stay longer in the reservoir
+        flow_rate = min(inflow, outflow)
     
-    if avg_flow <= 0:
-        # Cannot calculate residence time
+    if flow_rate <= 0:
+        # Cannot calculate residence time with zero or negative flow
         return {
             'residence_time_seconds': float('inf'),
             'residence_time_days': float('inf'),
             'reservoir_volume': volume,
-            'avg_flow': avg_flow
+            'avg_flow': flow_rate
         }
     
-    # Calculate residence time (V/Q)
-    residence_time_seconds = volume / avg_flow
+    # Calculate residence time (V/Q) - basic hydraulic principle
+    residence_time_seconds = volume / flow_rate
     
-    # Convert to days
+    # Convert to days for easier interpretation
     residence_time_days = residence_time_seconds / (24 * 3600)
     
     return {
         'residence_time_seconds': residence_time_seconds,
         'residence_time_days': residence_time_days,
         'reservoir_volume': volume,
-        'avg_flow': avg_flow
+        'avg_flow': flow_rate
     }
 
 def estimate_water_surface_profile(
@@ -267,14 +292,15 @@ def estimate_water_surface_profile(
         downstream_distance, downstream_points
     )
     
-    # Adjust x coordinates for tailwater
-    # Upstream: negative distances (dam at x=0)
-    # Downstream: positive distances
-    upstream_x = -np.flip(backwater['x'])
-    downstream_x = tailwater['x']
+    # Adjust x coordinates for spatial continuity
+    # For upstream: convert to negative distances with dam at x=0
+    # This preserves the channel direction and flow direction
+    upstream_x = -np.flip(backwater['x'])  # Negative and flipped for upstream direction
+    downstream_x = tailwater['x']  # Positive for downstream direction
     
-    # Adjust z coordinates to ensure continuity at dam
-    dam_base = dam.base_elevation
+    # Ensure vertical alignment at the dam
+    # The WSE and bed elevation should align properly at the dam location (x=0)
+    # No additional shifting needed if calculate_backwater_curve is already aligned
     
     # Combine profiles
     x = np.concatenate([upstream_x, downstream_x])
@@ -283,20 +309,23 @@ def estimate_water_surface_profile(
     y = np.concatenate([backwater['y'], tailwater['y']])
     v = np.concatenate([backwater['v'], tailwater['v']])
     
-    # Add dam profile
-    # Create a dense set of points for dam
-    dam_x = np.linspace(-0.1, 0.1, 10)
+    # Add dam profile for visualization
+    # Create a dense set of points for dam structure detail
+    dam_x = np.linspace(-0.1, 0.1, 10)  # Small x range for dam width
     
-    # Get dam profile
+    # Get dam profile (structure only)
     dam_profile = dam.get_profile(dam_x)
     
-    # Insert dam profile
+    # Insert dam profile at x=0 (between upstream and downstream sections)
     insert_idx = len(upstream_x)
     
+    # Insert dam geometry
     x = np.insert(x, insert_idx, dam_profile['x'])
     z = np.insert(z, insert_idx, dam_profile['z'])
     
-    # Add NaN for water surface at dam (will not be plotted)
+    # Add NaN for water surface at dam location
+    # This creates a visual break at the dam and prevents connecting
+    # the upstream and downstream water surfaces across the dam
     wse = np.insert(wse, insert_idx, np.full_like(dam_profile['x'], np.nan))
     y = np.insert(y, insert_idx, np.full_like(dam_profile['x'], np.nan))
     v = np.insert(v, insert_idx, np.full_like(dam_profile['x'], np.nan))
@@ -330,6 +359,7 @@ def determine_control_point(
         Dict[str, float]: Control point characteristics
     """
     # Calculate normal and critical depths
+    # These are fundamental hydraulic parameters that define the flow regime
     yn = normal_depth(channel, discharge, channel_slope)
     yc = channel.critical_depth(discharge)
     
@@ -337,7 +367,10 @@ def determine_control_point(
     upstream_elevation = dam.get_upstream_water_elevation(discharge, width)
     upstream_depth = upstream_elevation - dam.base_elevation
     
-    # Calculate Froude numbers
+    # Calculate Froude numbers at key sections
+    # Froude number < 1: Subcritical flow
+    # Froude number > 1: Supercritical flow
+    # Froude number = 1: Critical flow
     area_n = channel.area(yn)
     velocity_n = discharge / area_n
     froude_n = basic.froude_number(velocity_n, yn)
@@ -350,28 +383,45 @@ def determine_control_point(
     velocity_u = discharge / area_u
     froude_u = basic.froude_number(velocity_u, upstream_depth)
     
-    # Determine the controlling section
-    if froude_n < 1:  # Subcritical flow
+    # Determine the controlling section based on hydraulic principles
+    # For subcritical flow: control is downstream
+    # For supercritical flow: control is upstream
+    if froude_n < 1:  # Subcritical flow in channel
         if upstream_depth > yn:
+            # Backwater effect: M1 curve (mild slope, backwater)
+            # The dam is controlling the upstream water surface
             control_type = "Dam-controlled (M1 profile)"
             control_location = "Downstream (at dam)"
-        else:
+        elif abs(upstream_depth - yn) / yn < 0.01:
+            # Within 1% of normal depth - effectively normal flow
             control_type = "Channel-controlled (normal depth)"
             control_location = "Upstream (normal depth)"
-    else:  # Supercritical flow
+        else:
+            # Drawdown curve: M2 profile (mild slope, drawdown)
+            # Some downstream control is causing drawdown
+            control_type = "Dam-controlled (M2 profile)"
+            control_location = "Downstream (at dam)"
+    else:  # Supercritical flow in channel
         if upstream_depth < yn:
+            # S1 curve (steep slope, backwater)
             control_type = "Dam-controlled (S1 profile)"
             control_location = "Downstream (at dam)"
         else:
+            # S2 curve or normal depth in supercritical flow
             control_type = "Channel-controlled (normal depth)"
             control_location = "Upstream (normal depth)"
     
     # Determine if critical flow occurs
+    # This occurs at hydraulic controls where flow transitions between
+    # subcritical and supercritical regimes
     critical_depth_location = "None"
     if froude_n < 1 and froude_u > 1:
         critical_depth_location = "Between normal depth and dam"
     elif froude_n > 1 and froude_u < 1:
         critical_depth_location = "Between normal depth and dam"
+    elif abs(froude_u - 1.0) < 0.05:
+        # Close to critical flow at dam
+        critical_depth_location = "At dam approach"
     
     return {
         'normal_depth': yn,
